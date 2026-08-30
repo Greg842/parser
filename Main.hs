@@ -55,129 +55,108 @@ skipString :: String -> Parser String
 skipString "" = pure ""
 skipString (x:xs) = (++) <$> skipChar x <*> skipString xs
 
-letter :: Parser String
-letter = string "A" <|> string "B" <|> string "C" <|> string "D"
+failed :: Parser Char
+failed = Parser $ \_ -> Nothing
 
-addBrackets :: String -> String
-addBrackets a = "(" ++ a ++ ")"
+letter :: Parser Char
+letter = foldl (<|>) failed [char x | x <- ['A'..'Z']]
 
+digit :: Parser Char
+digit = foldl (<|>) failed [char x | x <- ['0'..'9']]
 
-brackets :: Parser (String -> String)
-brackets = Parser $ \input ->
-                      Just (addBrackets, input)
+variable' :: Parser String
+variable' = ((:) <$> (digit <|> letter) <*> variable') <|> string ""
 
-expression :: Parser String
-expression = (brackets <*> ((++) <$> ((++) <$> disjunct <*> string "->") <*> expression)) <|> disjunct
+data Expr = Disjunct Expr Expr | Conjunct Expr Expr | Implic Expr Expr | Negation Expr | Variable String
+            deriving (Show, Eq)
 
-disjunct :: Parser String
-disjunct = (brackets <*> ((++) <$> ((++) <$> conjunct <*> string "|") <*> disjunct)) <|> conjunct
+variable :: Parser Expr
+variable = Variable <$> ((:) <$> letter <*> variable')
 
-conjunct :: Parser String
-conjunct = (brackets <*> ((++) <$> ((++) <$> inversion <*> string "&") <*> conjunct)) <|> inversion
+impOp :: Parser (Expr -> Expr -> Expr)
+impOp = (\_ -> Implic) <$> string "->"
 
-inversion :: Parser String
-inversion = letter <|> ((++) <$> ((++) <$> skipString "(" <*> expression) <*> skipString ")") <|> ((++) <$> string "!" <*> inversion)
+disOp :: Parser (Expr -> Expr -> Expr)
+disOp = (\_ -> Disjunct) <$> string "|"
 
+conOp :: Parser (Expr -> Expr -> Expr)
+conOp = (\_ -> Conjunct) <$> string "&"
 
-axiom1 :: Parser String
-axiom1 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "(") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, rest''') <- runParser (string "->(") rest''
-                   (_, _) <- runParser ((++) <$> disjunct <*> (string ("->" ++ a ++ "))"))) rest'''
-                   return (input ++ " (Sch. ax. 1)", rest)
+negOp :: Parser (Expr -> Expr)
+negOp = (\_ -> Negation) <$> string "!"
 
-axiom2 :: Parser String
-axiom2 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "((") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, rest''') <- runParser (string "->") rest''
-                   (b, rest'''') <- runParser disjunct rest'''
-                   (_, rest''''') <- runParser (string (")->((" ++ a ++ "->(" ++ b ++ "->")) rest''''
-                   (c, rest'''''') <- runParser disjunct rest'''''
-                   (_, _) <- runParser (string ("))->(" ++ a ++ "->" ++ c ++ ")))")) rest''''''
-                   return (input ++ " (Sch. ax. 2)", rest)
+comb2 :: Parser Expr -> Parser (Expr -> Expr -> Expr) -> Parser Expr -> Parser Expr
+comb2 x y z = (\a op b -> op a b) <$> x <*> y <*> z
 
-axiom3 :: Parser String
-axiom3 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "(") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, rest''') <- runParser (string "->(") rest''
-                   (b, rest'''') <- runParser disjunct rest'''
-                   (_, _) <- runParser (string ("->(" ++ a ++ "&" ++ b ++ "))")) rest''''
-                   return (input ++ " (Sch. ax. 3)", rest) 
+comb1 :: Parser (Expr -> Expr) -> Parser Expr -> Parser Expr
+comb1 x y = (\op a -> op a) <$> x <*> y
 
-axiom4 :: Parser String
-axiom4 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "((") output
-                   (a, rest'') <- runParser inversion rest'
-                   (_, rest''') <- runParser (string "&") rest''
-                   (_, rest'''') <- runParser inversion rest'''
-                   (_, _) <- runParser (string (")->" ++ a ++ ")")) rest''''
-                   return (input ++ " (Sch. ax. 4)", rest)           
+expression :: Parser Expr
+expression = (comb2 disjunct impOp expression) <|> disjunct
 
-axiom5 :: Parser String
-axiom5 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "((") output
-                   (_, rest'') <- runParser inversion rest'
-                   (_, rest''') <- runParser (string "&") rest''
-                   (b, rest'''') <- runParser inversion rest'''
-                   (_, _) <- runParser (string (")->" ++ b ++ ")")) rest''''
-                   return (input ++ " (Sch. ax. 5)", rest)           
+disjunct :: Parser Expr
+disjunct = (comb2 conjunct disOp disjunct) <|> conjunct
 
-axiom6 :: Parser String
-axiom6 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "(") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, _) <- runParser ((++) <$> ((++) <$> (string ("->(" ++ a ++ "|")) <*> conjunct) <*> string "))") rest''
-                   return (input ++ " (Sch. ax. 6)", rest) 
+conjunct :: Parser Expr
+conjunct = (comb2 negat conOp conjunct) <|> negat
 
-axiom7 :: Parser String
-axiom7 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "(") output
-                   (b, rest'') <- runParser disjunct rest'
-                   (_, _) <- runParser ((++) <$> ((++) <$> (string "->(") <*> conjunct) <*> string ("|" ++ b ++ "))")) rest''
-                   return (input ++ " (Sch. ax. 7)", rest) 
+negat :: Parser Expr
+negat = variable <|> ((\_ y _ -> y) <$> skipChar '(' <*> expression <*> skipChar ')') <|> (comb1 negOp negat)
 
-axiom8 :: Parser String
-axiom8 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "((") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, rest''') <- runParser (string "->") rest''
-                   (c, rest'''') <- runParser disjunct rest'''
-                   (_, rest''''') <- runParser (string ")->((") rest''''
-                   (b, rest'''''') <- runParser disjunct rest'''''
-                   (_, _) <- runParser (string ("->" ++ c ++ ")->((" ++ a ++ "|" ++ b ++ ")->" ++ c ++ ")))")) rest''''''
-                   return (input ++ " (Sch. ax. 8)", rest) 
+mp :: Expr -> Expr -> Expr -> Bool
+mp b a (Implic a0 b0) = a == a0 && b == b0
+mp _ _ _ = False
 
-axiom9 :: Parser String
-axiom9 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "((") output
-                   (a, rest'') <- runParser disjunct rest'
-                   (_, rest''') <- runParser (string "->") rest''
-                   (b, rest'''') <- runParser disjunct rest'''
-                   (_, _) <- runParser (string (")->((" ++ a ++ "->!" ++ b ++ ")->!" ++ a ++ "))")) rest''''
-                   return (input ++ " (Sch. ax. 9)", rest)
+ax1 :: Expr -> String
+ax1 prop = case prop of
+           (Implic a0 (Implic _ a1)) -> if a0 == a1 then "Axioms scheme 1" else ax2 prop
+           _ -> ax2 prop 
 
-axiom10 :: Parser String
-axiom10 = Parser $ \input -> do
-                   (output, rest) <- runParser expression input
-                   (_, rest') <- runParser (string "(!!") output
-                   (a, rest'') <- runParser inversion rest'
-                   (_, _) <- runParser (string ("->" ++ a ++ ")")) rest''
-                   return (input ++ " (Sch. ax. 10)", rest)
+ax2 :: Expr -> String
+ax2 prop = case prop of
+           (Implic (Implic a0 b0) (Implic (Implic a1 (Implic b1 c1)) (Implic a2 c2))) -> if a0 == a1 && a1 == a2 && b0 == b1 && c1 == c2 then "Axioms scheme 2" else ax3 prop
+           _ -> ax3 prop
 
-axiom :: Parser String
-axiom = axiom1 <|> axiom2 <|> axiom3 <|> axiom4 <|> axiom5 <|> axiom6 <|> axiom7 <|> axiom8 <|> axiom9 <|> axiom10
+ax3 :: Expr -> String
+ax3 prop = case prop of
+           (Implic a0 (Implic b0 (Conjunct a1 b1))) -> if a0 == a1 && b0 == b1 then "Axioms scheme 3" else ax4 prop
+           _ -> ax4 prop
+
+ax4 :: Expr -> String
+ax4 prop = case prop of
+           (Implic (Conjunct a0 _) a1) -> if a0 == a1 then "Axioms scheme 4" else ax5 prop
+           _ -> ax5 prop
+
+ax5 :: Expr -> String
+ax5 prop = case prop of
+           (Implic (Conjunct _ b0) b1) -> if b0 == b1 then "Axioms scheme 5" else ax6 prop
+           _ -> ax6 prop
+
+ax6 :: Expr -> String
+ax6 prop = case prop of
+           (Implic a0 (Disjunct a1 _)) -> if a0 == a1 then "Axioms scheme 6" else ax7 prop
+           _ -> ax7 prop
+
+ax7 :: Expr -> String
+ax7 prop = case prop of
+           (Implic b0 (Disjunct _ b1)) -> if b0 == b1 then "Axioms scheme 7" else ax8 prop
+           _ -> ax8 prop
+
+ax8 :: Expr -> String
+ax8 prop = case prop of
+           (Implic (Implic a0 c0) (Implic (Implic b1 c1) (Implic (Disjunct a2 b2) c2))) -> if a0 == a2 && b1 == b2 && c0 == c1 && c1 == c2 then "Axioms scheme 8" else ax9 prop
+           _ -> ax9 prop
+
+ax9 :: Expr -> String
+ax9 prop = case prop of
+           (Implic (Implic a0 b0) (Implic (Implic a1 (Negation b1)) (Negation a2))) -> if a0 == a1 && a1 == a2 && b0 == b1 then "Axioms scheme 9" else ax10 prop
+           _ -> ax10 prop
+
+ax10 :: Expr -> String
+ax10 prop = case prop of
+            (Implic (Negation (Negation a0)) a1) -> if a0 == a1 then "Axioms scheme 10" else "Not proven"
+            _ -> "Not proven"
 
 main :: IO ()
-main = print $ runParser axiom "!!(B->C)->B->C"
+-- main = print $ runParser expression "(A->A->A)"
+main = print $ ax1 (Implic (Implic (Variable "A") (Implic (Variable "A") (Variable "A"))) (Implic (Implic (Variable "A") (Implic (Implic (Variable "A") (Variable "A")) (Variable "A"))) (Implic (Variable "A") (Variable "A"))))
