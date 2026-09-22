@@ -1,5 +1,13 @@
 module Main where
 
+import Data.List (findIndex)
+import Data.List.Split (splitOn)
+import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.State (StateT, get, put, runStateT)
+import Control.Monad.Trans.Reader (ReaderT, ask, runReaderT)
+import Control.Monad.Trans.Writer (Writer, tell, execWriter)
+import Control.Monad (unless)
+
 newtype Parser a = Parser {runParser :: String -> Maybe (a, String)}
 
 instance Functor Parser where {
@@ -55,14 +63,11 @@ skipString :: String -> Parser String
 skipString "" = pure ""
 skipString (x:xs) = (++) <$> skipChar x <*> skipString xs
 
-failed :: Parser Char
-failed = Parser $ \_ -> Nothing
-
 letter :: Parser Char
-letter = foldl (<|>) failed [char x | x <- ['A'..'Z']]
+letter = foldl (<|>) empty [char x | x <- ['A'..'Z']]
 
 digit :: Parser Char
-digit = foldl (<|>) failed [char x | x <- ['0'..'9']]
+digit = foldl (<|>) empty [char x | x <- ['0'..'9']]
 
 variable' :: Parser String
 variable' = ((:) <$> (digit <|> letter) <*> variable') <|> string ""
@@ -106,6 +111,15 @@ negat = variable <|> ((\_ y _ -> y) <$> skipChar '(' <*> expression <*> skipChar
 mp :: Expr -> Expr -> Expr -> Bool
 mp b a (Implic a0 b0) = a == a0 && b == b0
 mp _ _ _ = False
+
+annot :: [Expr] -> [Expr] -> Expr -> String
+annot hyp proven prop
+                | prop `elem` hyp = "Hypothesis"
+                | otherwise     = case findIndex (\a -> Implic a prop `elem` proven) proven of
+                                  Just i -> case findIndex (\ab -> ab == Implic (proven !! i) prop) proven of
+                                            Just j -> "M. P. " ++ show (i + 1) ++ ", " ++ show (j + 1)
+                                            Nothing -> "Unknown error"
+                                  Nothing -> ax1 prop
 
 ax1 :: Expr -> String
 ax1 prop = case prop of
@@ -157,6 +171,29 @@ ax10 prop = case prop of
             (Implic (Negation (Negation a0)) a1) -> if a0 == a1 then "Axioms scheme 10" else "Not proven"
             _ -> "Not proven"
 
+fullAnnot :: StateT Int (ReaderT ([Expr], [Expr], [String]) (Writer String)) ()
+fullAnnot = do
+    i <- get
+    (hyps, exprs, strs) <- lift ask
+    lift (lift (tell $ show (i + 1) ++ ". " ++ (strs !! i) ++ " (" ++ annot hyps (take i exprs) (exprs !! i) ++ ")\n"))
+    put (i + 1)
+    unless ((i + 1) == length exprs) fullAnnot
+
+getHyps :: [String] -> [Expr]
+getHyps (x:xs) = map ((\ms -> case ms of
+                              Just s -> fst s
+                              Nothing -> Variable "Unknown error") . runParser expression) (splitOn "," (head (splitOn "|-" x)))
+getHyps [] = []
+
+getExprs :: [String] -> [Expr]
+getExprs (x:xs) = map ((\ms -> case ms of
+                              Just s -> fst s
+                              Nothing -> Variable "Unknown error") . runParser expression) xs
+getExprs [] = []
+
+res :: String -> String
+res str = let lst = lines str in
+          execWriter (runReaderT (runStateT fullAnnot 0) (getHyps lst, getExprs lst, tail lst))
+
 main :: IO ()
--- main = print $ runParser expression "(A->A->A)"
-main = print $ ax1 (Implic (Implic (Variable "A") (Implic (Variable "A") (Variable "A"))) (Implic (Implic (Variable "A") (Implic (Implic (Variable "A") (Variable "A")) (Variable "A"))) (Implic (Variable "A") (Variable "A"))))
+main = print $ res "A|B,A->C,B->C|-C\n(A->C)->(B->C)->(A|B->C)\nA->C\n(B->C)->(A|B->C)\nB->C\n(A|B->C)\nA|B\nC"
